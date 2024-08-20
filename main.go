@@ -44,7 +44,7 @@ func getService(c *gin.Context) {
 
 	servicesMu.RLock()
 	service, exists := services[name]
-	servicesMu.RLock()
+	servicesMu.RUnlock()
 
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
