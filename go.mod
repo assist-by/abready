@@ -4,7 +4,7 @@ go 1.22.5
 
 require (
 	github.com/gin-gonic/gin v1.10.0
-	github.com/with-autro/autro-library v0.1.4
+	github.com/with-autro/autro-library v0.1.5
 )
 
 require (
