@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -9,14 +11,34 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 
 	lib "github.com/with-autro/autro-library"
 )
 
 var (
-	services   = make(map[string]*lib.Service)
-	servicesMu sync.RWMutex
+	services    = make(map[string]*lib.Service)
+	servicesMu  sync.RWMutex
+	redisClient *redis.Client
+	ctx         = context.Background()
 )
+
+// redis 초기화 함수
+func initRedis() {
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
+	redisClient = redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+
+	_, err := redisClient.Ping(ctx).Result()
+	if err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+}
 
 // 유효성 검사 함수
 func validateService(service *lib.Service) error {
@@ -45,14 +67,30 @@ func registerService(c *gin.Context) {
 
 	service.LastHeartbeat = time.Now()
 
-	servicesMu.Lock()
-	services[service.Name] = &service
-	servicesMu.Unlock()
+	serviceJSON, err := json.Marshal(service)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal service"})
+		return
+	}
+
+	err = redisClient.Set(ctx, service.Name, serviceJSON, 0).Err()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register service"})
+		return
+	}
+
+	err = redisClient.SAdd(ctx, "all:services", service.Name).Err()
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add service to set"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Service registered successfully"})
 }
 
 // 서비스 업데이트 함수
+// 서비스 업데이트 함수는 지금은 이름을 변경하지 않는다는 전제가 있다.
 func updateService(c *gin.Context) {
 	name := c.Param("name")
 
@@ -64,18 +102,40 @@ func updateService(c *gin.Context) {
 
 	if err := validateService(&service); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	}
-
-	servicesMu.Lock()
-	if _, exists := services[name]; !exists {
-		servicesMu.Unlock()
-		c.JSON(http.StatusNotFound, gin.H{"error": "Service not found."})
 		return
 	}
 
-	service.LastHeartbeat = time.Now()
-	services[name] = &service
-	servicesMu.Unlock()
+	err := redisClient.Watch(ctx, func(tx *redis.Tx) error {
+		exists, err := redisClient.Exists(ctx, name).Result()
+		if err != nil {
+			return err
+		}
+		if exists == 0 {
+			return fmt.Errorf("service not found")
+		}
+		service.LastHeartbeat = time.Now()
+
+		serviceJSON, err := json.Marshal(service)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
+			return p.Set(ctx, name, serviceJSON, 0).Err()
+		})
+		return err
+	}, name)
+
+	if err != nil {
+		if err == redis.TxFailedErr {
+			c.JSON(http.StatusConflict, gin.H{"error": "Transaction failed, please try again"})
+		} else if err.Error() == "service not found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update service"})
+		}
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Service updated sucessfully."})
 }
@@ -84,22 +144,55 @@ func updateService(c *gin.Context) {
 func deleteService(c *gin.Context) {
 	name := c.Param("name")
 
-	servicesMu.Lock()
-	if _, exists := services[name]; !exists {
-		servicesMu.Unlock()
+	exists, err := redisClient.Exists(ctx, name).Result()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check service existence"})
+		return
+	}
+	if exists == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
 		return
 	}
 
-	delete(services, name)
-	servicesMu.Unlock()
+	err = redisClient.Del(ctx, name).Err()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete service"})
+		return
+	}
+
+	err = redisClient.SRem(ctx, "all:services", name).Err()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove service from set"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Service deleted successfully"})
 }
 
 // 서비스 리스트 반환 함수
 func listServices(c *gin.Context) {
-	servicesMu.RLock()
-	defer servicesMu.RUnlock()
+	serviceNames, err := redisClient.SMembers(ctx, "all:services").Result()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list services"})
+		return
+	}
+
+	services := make(map[string]lib.Service)
+	for _, name := range serviceNames {
+		serviceJSON, err := redisClient.Get(ctx, name).Result()
+		if err != nil {
+			log.Printf("Failed to get service %s: %v", name, err)
+			continue
+		}
+
+		var service lib.Service
+		err = json.Unmarshal([]byte(serviceJSON), &service)
+		if err != nil {
+			log.Printf("Failed to unmarshal service %s: %v", name, err)
+			continue
+		}
+		services[name] = service
+	}
 
 	c.JSON(http.StatusOK, services)
 }
@@ -108,12 +201,19 @@ func listServices(c *gin.Context) {
 func getService(c *gin.Context) {
 	name := c.Param("name")
 
-	servicesMu.RLock()
-	service, exists := services[name]
-	servicesMu.RUnlock()
-
-	if !exists {
+	serviceJSON, err := redisClient.Get(ctx, name).Result()
+	if err == redis.Nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get service"})
+		return
+	}
+
+	var service lib.Service
+	err = json.Unmarshal([]byte(serviceJSON), &service)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unmarshal service"})
 		return
 	}
 
@@ -123,16 +223,49 @@ func getService(c *gin.Context) {
 // 헬스체크 함수
 func healthCheck(c *gin.Context) {
 	name := c.Param("name")
-	servicesMu.Lock()
-	defer servicesMu.Unlock()
 
-	service, exists := services[name]
-	if !exists {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+	err := redisClient.Watch(ctx, func(tx *redis.Tx) error {
+		exists, err := tx.Exists(ctx, name).Result()
+		if err != nil {
+			return err
+		}
+		if exists == 0 {
+			return fmt.Errorf("service not found")
+		}
+
+		serviceJSON, err := tx.Get(ctx, name).Result()
+		if err != nil {
+			return err
+		}
+
+		var service lib.Service
+		if err := json.Unmarshal([]byte(serviceJSON), &service); err != nil {
+			return err
+		}
+
+		service.LastHeartbeat = time.Now()
+		updatedServiceJSON, err := json.Marshal(service)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
+			return p.Set(ctx, name, updatedServiceJSON, 0).Err()
+		})
+		return err
+	}, name)
+
+	if err != nil {
+		if err == redis.TxFailedErr {
+			c.JSON(http.StatusConflict, gin.H{"error": "Transaction failed, please try again"})
+		} else if err.Error() == "service not found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update service health"})
+		}
 		return
 	}
 
-	service.LastHeartbeat = time.Now()
 	c.JSON(http.StatusOK, gin.H{"message": "Health check successful"})
 }
 
