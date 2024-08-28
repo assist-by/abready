@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,8 +17,6 @@ import (
 )
 
 var (
-	services          = make(map[string]*lib.Service)
-	servicesMu        sync.RWMutex
 	redisClient       *redis.Client
 	ctx               = context.Background()
 	kafkaBroker       string
