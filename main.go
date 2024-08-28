@@ -12,19 +12,23 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 
 	lib "github.com/with-autro/autro-library"
 )
 
 var (
-	services    = make(map[string]*lib.Service)
-	servicesMu  sync.RWMutex
-	redisClient *redis.Client
-	ctx         = context.Background()
+	services          = make(map[string]*lib.Service)
+	servicesMu        sync.RWMutex
+	redisClient       *redis.Client
+	ctx               = context.Background()
+	kafkaBroker       string
+	registrationTopic string
 )
 
-// redis 초기화 함수
-func initRedis() {
+func init() {
+
+	// redis 초기화
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
 		redisAddr = "localhost:6379"
@@ -37,6 +41,63 @@ func initRedis() {
 	_, err := redisClient.Ping(ctx).Result()
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+
+	kafkaBroker = os.Getenv("KAFKA_BROKER")
+	if kafkaBroker == "" {
+		kafkaBroker = "kafka:9092"
+	}
+	registrationTopic = os.Getenv("REGISTRATION_TOPIC")
+	if registrationTopic == "" {
+		registrationTopic = "service-registration"
+	}
+
+}
+
+func startKafkaConsumer() {
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:     []string{kafkaBroker},
+		Topic:       registrationTopic,
+		MaxAttempts: 5,
+	})
+
+	defer reader.Close()
+
+	for {
+		msg, err := reader.ReadMessage(context.Background())
+		if err != nil {
+			log.Printf("Error reading message: %v", err)
+			continue
+		}
+
+		var service lib.Service
+		err = json.Unmarshal(msg.Value, &service)
+		if err != nil {
+			log.Printf("Error unmarshaling service data: %v", err)
+			continue
+		}
+
+		service.LastHeartbeat = time.Now()
+
+		serviceJSON, err := json.Marshal(service)
+		if err != nil {
+			log.Printf("Error marshaling service: %v", err)
+			continue
+		}
+
+		err = redisClient.Set(ctx, service.Name, serviceJSON, 0).Err()
+		if err != nil {
+			log.Printf("Error registering service: %v", err)
+			continue
+		}
+
+		err = redisClient.SAdd(ctx, "all:services", service.Name).Err()
+		if err != nil {
+			log.Printf("Error adding service to set: %v", err)
+			continue
+		}
+
+		log.Printf("Service registered: %s", service.Name)
 	}
 }
 
@@ -274,7 +335,7 @@ func healthHandler(c *gin.Context) {
 }
 
 func main() {
-	initRedis()
+	go startKafkaConsumer()
 
 	router := gin.Default()
 
