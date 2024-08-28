@@ -274,6 +274,8 @@ func healthHandler(c *gin.Context) {
 }
 
 func main() {
+	initRedis()
+
 	router := gin.Default()
 
 	router.GET("/services", listServices)
