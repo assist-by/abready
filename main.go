@@ -54,6 +54,7 @@ func init() {
 
 }
 
+// kafka consumer가 메시지 받기 시작
 func startKafkaConsumer() {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     []string{kafkaBroker},
@@ -63,6 +64,23 @@ func startKafkaConsumer() {
 
 	defer reader.Close()
 
+	go registerService(reader)
+}
+
+// 유효성 검사 함수
+func validateService(service *lib.Service) error {
+	if service.Name == "" {
+		return fmt.Errorf("service name cannot be empty")
+	}
+	if service.Address == "" {
+		return fmt.Errorf("service Address cannot be empty")
+	}
+
+	return nil
+}
+
+// 서비스 등록 함수
+func registerService(reader *kafka.Reader) {
 	for {
 		msg, err := reader.ReadMessage(context.Background())
 		if err != nil {
@@ -99,55 +117,6 @@ func startKafkaConsumer() {
 
 		log.Printf("Service registered: %s", service.Name)
 	}
-}
-
-// 유효성 검사 함수
-func validateService(service *lib.Service) error {
-	if service.Name == "" {
-		return fmt.Errorf("service name cannot be empty")
-	}
-	if service.Address == "" {
-		return fmt.Errorf("service Address cannot be empty")
-	}
-
-	return nil
-}
-
-// 서비스 등록 함수
-func registerService(c *gin.Context) {
-	var service lib.Service
-	if err := c.ShouldBindJSON(&service); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	if err := validateService(&service); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	service.LastHeartbeat = time.Now()
-
-	serviceJSON, err := json.Marshal(service)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal service"})
-		return
-	}
-
-	err = redisClient.Set(ctx, service.Name, serviceJSON, 0).Err()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register service"})
-		return
-	}
-
-	err = redisClient.SAdd(ctx, "all:services", service.Name).Err()
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add service to set"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Service registered successfully"})
 }
 
 // 서비스 업데이트 함수
@@ -340,7 +309,6 @@ func main() {
 	router := gin.Default()
 
 	router.GET("/services", listServices)
-	router.POST("/register", registerService)
 	router.GET("/services/:name", getService)
 	router.PUT("/services/:name", updateService)
 	router.DELETE("/services/:name", deleteService)
