@@ -61,7 +61,7 @@ func startKafkaConsumer() {
 
 	defer reader.Close()
 
-	go registerService(reader)
+	registerService(reader)
 }
 
 // 유효성 검사 함수
