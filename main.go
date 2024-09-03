@@ -24,7 +24,6 @@ var (
 )
 
 func init() {
-
 	// redis 초기화
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
