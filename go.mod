@@ -6,7 +6,7 @@ require (
 	github.com/gin-gonic/gin v1.10.0
 	github.com/redis/go-redis/v9 v9.6.1
 	github.com/segmentio/kafka-go v0.4.47
-	github.com/with-autro/autro-library v0.1.5
+	github.com/with-autro/autro-library v0.1.7
 )
 
 require (
