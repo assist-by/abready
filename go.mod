@@ -1,4 +1,4 @@
-module github.com/assist-by/autro-service-discovery
+module github.com/assist-by/abready
 
 go 1.22.5
 
