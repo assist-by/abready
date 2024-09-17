@@ -27,7 +27,7 @@ func init() {
 	// redis 초기화
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
-		redisAddr = "localhost:6379"
+		redisAddr = "redis:6379"
 	}
 
 	redisClient = redis.NewClient(&redis.Options{
@@ -300,7 +300,13 @@ func healthHandler(c *gin.Context) {
 }
 
 func main() {
+
 	go startKafkaConsumer()
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8500"
+	}
 
 	router := gin.Default()
 
@@ -311,11 +317,6 @@ func main() {
 	router.POST("/health/:name", healthCheck)
 	router.GET("/health", healthHandler)
 	router.HEAD("/health", healthHandler)
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8500"
-	}
 
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
