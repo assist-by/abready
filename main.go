@@ -13,7 +13,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 
-	lib "github.com/assist-by/autro-library"
+	lib "github.com/assist-by/libStruct"
 )
 
 var (
